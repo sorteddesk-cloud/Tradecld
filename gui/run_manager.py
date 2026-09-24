@@ -38,6 +38,7 @@ from .agent_map import (
     is_analyst_working_node,
     node_to_agent_display,
 )
+from .pause import GATE, PauseCallback
 from .stats import estimate_cost
 
 logger = logging.getLogger(__name__)
@@ -164,6 +165,7 @@ class RunManager:
                 else:
                     break
 
+        GATE.resume()
         run.thread = threading.Thread(
             target=_worker, args=(run, self.persist),
             name=f"run-{run.id}", daemon=True,
@@ -341,7 +343,11 @@ def _worker(run: Run, persist_cb=None) -> None:
         results_dir = Path(config["results_dir"]) / run.ticker / run.date / "reports"
         results_dir.mkdir(parents=True, exist_ok=True)
 
-        graph = TradingAgentsGraph(selected, config=config)
+        def _on_hold() -> None:
+            run.emit({"type": "status", "message": "⏸ Paused before the next step. Press Resume to continue."})
+
+        graph = TradingAgentsGraph(selected, config=config, callbacks=[
+            PauseCallback(GATE, on_hold=_on_hold, should_stop=run.is_cancelled)])
 
         debate_state: dict = {}
         risk_state:   dict = {}
@@ -425,6 +431,7 @@ def _worker(run: Run, persist_cb=None) -> None:
                   "message": run.error,
                   "traceback": traceback.format_exc()})
     finally:
+        GATE.resume()  # a pause belongs to the run it was pressed on
         run.ended_at = time.time()
         run.stats["elapsed_s"] = round(run.ended_at - run.started_at, 2)
         # Final status broadcast for clients that joined late or stayed on

@@ -649,8 +649,11 @@ function setUiRunning(isRunning) {
   const dot = globalStatus.querySelector(".status-dot");
   const txt = globalStatus.querySelector(".status-text");
   
+  const pauseBtn = document.getElementById("pause-btn");
   if (isRunning) {
     runBtn.style.display = "none";
+    stopBtn.style.display = "inline-flex";
+    if (pauseBtn) pauseBtn.style.display = "inline-flex";
     dot.className = "status-dot running";
     txt.textContent = "RUNNING";
     startTime = Date.now();
@@ -658,6 +661,8 @@ function setUiRunning(isRunning) {
   } else {
     runBtn.style.display = "inline-flex";
     stopBtn.style.display = "none";
+    if (pauseBtn) pauseBtn.style.display = "none";
+    if (window.syncPauseButtons) window.syncPauseButtons(false);
     dot.className = "status-dot done";
     txt.textContent = "DONE";
     clearInterval(timerInterval);

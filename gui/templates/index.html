@@ -239,6 +239,10 @@
           <button id="run-btn" class="btn btn-primary btn-xl" onclick="startAnalysis()">
             <span class="btn-icon">▶</span><span>Run analysis</span>
           </button>
+          <button id="pause-btn" class="btn btn-ghost btn-xl pause-toggle" onclick="togglePause()" style="display:none"
+                  title="Pause before the next step (the step in progress finishes first)">
+            <span class="btn-icon">⏸</span><span class="pause-label">Pause</span>
+          </button>
           <button id="stop-btn" class="btn btn-danger btn-xl" onclick="stopAnalysis()" style="display:none">
             <span class="btn-icon">⏹</span><span>Stop</span>
           </button>
@@ -597,7 +601,11 @@
       <div class="card">
         <div class="card-title-row">
           <h2 class="card-title">Progress</h2>
-          <button class="btn btn-danger btn-sm" id="job-stop-btn" onclick="tradingStopJob()" style="display:none">■ Stop</button>
+          <div class="trading-inline">
+            <button class="btn btn-ghost btn-sm pause-toggle" id="job-pause-btn" onclick="togglePause()" style="display:none"
+                    title="Pause before the next step (the step in progress finishes first)"><span class="pause-label">⏸ Pause</span></button>
+            <button class="btn btn-danger btn-sm" id="job-stop-btn" onclick="tradingStopJob()" style="display:none">■ Stop</button>
+          </div>
         </div>
         <div class="form-hint" id="job-title">Nothing running.</div>
         <pre class="code-block trading-log" id="job-log"></pre>

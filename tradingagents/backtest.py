@@ -133,12 +133,14 @@ def run_backtest(
     portfolio=None,
     selected_analysts=("market", "social", "news", "fundamentals"),
     run_id: str | None = None,
+    callbacks: list | None = None,
 ) -> BacktestResult:
     """Analyze every ticker on every date, into a decision log of this run's own.
 
     The live log stays untouched: a sweep would otherwise flood the context that
     real runs read back. Cells already in this run's log are skipped, so an
-    interrupted sweep resumes by being run again.
+    interrupted sweep resumes by being run again. ``callbacks`` reach every
+    model call, e.g. to meter or pause a sweep.
     """
     # run_id becomes a path segment, so it is validated like a ticker: an
     # absolute or dotted value would otherwise place the run outside results_dir.
@@ -148,7 +150,7 @@ def run_backtest(
     run_config = {**config, "results_dir": str(run_dir),
                   "memory_log_path": str(run_dir / "trading_memory.md")}
 
-    graph = TradingAgentsGraph(selected_analysts, config=run_config)
+    graph = TradingAgentsGraph(selected_analysts, config=run_config, callbacks=callbacks)
     result = BacktestResult(run_id=run_id, log_path=Path(run_config["memory_log_path"]))
     done = {(e["ticker"], e["date"]) for e in graph.memory_log.load_entries()}
 
