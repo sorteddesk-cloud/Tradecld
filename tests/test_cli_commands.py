@@ -144,7 +144,7 @@ def test_paper_commands_open_run_and_report(runner, monkeypatch, tmp_path):
 
     monkeypatch.setattr(m.paper, "YahooPrices", _prices)
     monkeypatch.setattr(m, "_now", lambda: datetime(2026, 9, 22, 12, tzinfo=timezone.utc))
-    monkeypatch.setattr(m, "_graph_decider", lambda config: lambda *a: "Buy")
+    monkeypatch.setattr(m.paper, "graph_decider", lambda config: lambda *a: "Buy")
     ledger = str(tmp_path / "ledger.json")
 
     opened = runner.invoke(m.app, ["paper", "init", "--cash", "5000", "--ledger", ledger])
@@ -171,7 +171,7 @@ def test_paper_run_adds_screened_names_and_held_positions(runner, monkeypatch, t
     monkeypatch.setattr(m.paper, "YahooPrices", _prices)
     monkeypatch.setattr(m, "_now", lambda: datetime(2026, 9, 22, 12, tzinfo=timezone.utc))
     analyzed = []
-    monkeypatch.setattr(m, "_graph_decider",
+    monkeypatch.setattr(m.paper, "graph_decider",
                         lambda config: lambda t, *a: analyzed.append(t) or "Hold")
     monkeypatch.setattr(m.screener, "screen", lambda name, as_of: [
         Pick("AAPL", 0.3, 1, 1), Pick("SPY", 0.2, 1, 1), Pick("MSFT", 0.1, 1, 1)])
@@ -186,4 +186,4 @@ def test_paper_run_adds_screened_names_and_held_positions(runner, monkeypatch, t
     assert uk.exit_code == 1 and "trades in GBP" in uk.output
 
     empty = runner.invoke(m.app, ["paper", "run", "--ledger", ledger])
-    assert empty.exit_code == 1 and "--screen" in empty.output
+    assert empty.exit_code == 1 and "screener" in empty.output

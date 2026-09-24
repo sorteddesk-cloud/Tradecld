@@ -2,6 +2,8 @@
 
 > Imported from [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) v0.5.1 (commit `35543d0`), licensed under Apache-2.0 — see [LICENSE](LICENSE). Original README follows.
 
+> **Web GUI.** A local browser interface, ported from [TheLocalLab/TradingAgents-GUI](https://github.com/TheLocalLab/TradingAgents-GUI) (Apache-2.0) onto this version, plus a **Paper & Backtest** tab. Install once with `./install.sh` (Windows: `install.bat`), then launch with `./start.sh` (`start.bat`) and open http://127.0.0.1:5000. See [Web GUI](#web-gui) below.
+
 <p align="center">
   <img src="assets/TauricResearch.png" style="width: 60%; height: auto;">
 </p>
@@ -351,6 +353,23 @@ tradingagents backtest NVDA,AAPL --start 2026-06-01 --end 2026-08-01 --every 7
 ```
 
 Each cell is scored on realized alpha against the instrument's regional benchmark, grouped by rating. Your own decision log is never written to, and re-running the same grid with `run_id=result.run_id` skips the cells that already ran, so an interrupted sweep continues where it stopped.
+
+## Web GUI
+
+A local web interface for everything above: run an analysis and watch each agent work, browse and export saved reports, chat with a model about a report, manage API keys, and run paper sessions and backtests.
+
+```bash
+./install.sh     # once: creates .venv and installs the framework with the GUI extra
+./start.sh       # then: serves http://127.0.0.1:5000 and opens it
+```
+
+On Windows use `install.bat` and `start.bat`. Already have an environment? `pip install -e ".[gui]"` then `tradingagents-gui`.
+
+The **Paper & Backtest** tab drives the same paper account, screener and backtest as the CLI, using the provider and models chosen on the Configuration tab. Long jobs run in the background and report progress on the page; one job or analysis runs at a time.
+
+The server answers only on localhost and refuses requests made by other websites, since it holds your API keys and can start paid runs. `--host 0.0.0.0` serves your network instead; do that only on a network you trust.
+
+The GUI is adapted from [TheLocalLab/TradingAgents-GUI](https://github.com/TheLocalLab/TradingAgents-GUI) (Apache-2.0), which targets TradingAgents v0.2.5: its run driver now uses this version's run state, decision log and checkpoints, its report-length option is removed (this version has no such setting), and cross-site requests are refused.
 
 ## Paper trading
 

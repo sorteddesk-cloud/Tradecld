@@ -8,9 +8,7 @@ from cli.display import console
 from cli.run import run_analysis
 from tradingagents import paper, screener
 from tradingagents.backtest import iter_grid, run_backtest, summarize
-from tradingagents.dataflows.symbols import crypto_base
 from tradingagents.default_config import DEFAULT_CONFIG
-from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.portfolio import load_portfolio
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -145,24 +143,6 @@ def _ledger_path(ledger: str | None):
     return ledger or paper.default_ledger_path(DEFAULT_CONFIG)
 
 
-def _graph_decider(config: dict):
-    """Run the full graph for a ticker, with the analysts that apply to it."""
-    graphs: dict[tuple[str, ...], TradingAgentsGraph] = {}
-
-    def decide(ticker: str, trade_date: str, portfolio) -> str:
-        asset_type = "crypto" if crypto_base(ticker) else "stock"
-        # Crypto and commodity funds have no company financials to analyze.
-        no_fundamentals = asset_type == "crypto" or ticker in screener.COMMODITY_FUNDS
-        analysts = ("market", "social", "news") if no_fundamentals else (
-            "market", "social", "news", "fundamentals")
-        if analysts not in graphs:
-            graphs[analysts] = TradingAgentsGraph(list(analysts), config=config)
-        _, signal = graphs[analysts].propagate(ticker, trade_date, asset_type, portfolio=portfolio)
-        return signal
-
-    return decide
-
-
 @paper_app.command("init")
 def paper_init(
     cash: float = typer.Option(10_000.0, "--cash", help="Starting cash"),
@@ -226,52 +206,15 @@ def paper_run(
 
     Held positions are always analyzed, so the account can decide to sell them.
     """
-    path = _ledger_path(ledger)
-    prices = paper.YahooPrices()
     try:
-        book = paper.load_ledger(path)
-    except ValueError as exc:
+        book = paper.run_session(
+            _ledger_path(ledger), tickers.split(","), prices=paper.YahooPrices(),
+            decider=paper.graph_decider(DEFAULT_CONFIG), clock=_now, log=console.print,
+            screen=screen, top=top, screen_fn=screener.screen,
+        )
+    except Exception as exc:
         console.print(f"[red]{exc}[/red]")
         raise typer.Exit(code=1) from None
-
-    names = [t.strip().upper() for t in tickers.split(",") if t.strip()]
-    names += [t for t in book["positions"] if t not in names]
-    if screen:
-        try:
-            currency, _ = screener.universe(screen)
-            if currency != book["currency"]:
-                raise ValueError(f"the {screen} universe trades in {currency}, "
-                                 f"but this account is in {book['currency']}")
-            picks = screener.screen(screen, _screen_as_of())
-        except Exception as exc:
-            console.print(f"[red]{exc}[/red]")
-            raise typer.Exit(code=1) from None
-        new = [p for p in picks if p.ticker not in names][:top]
-        for pick in new:
-            console.print(f"screener picked {pick.ticker} ({pick.momentum:+.1%} over 3 months)")
-        names += [p.ticker for p in new]
-    if not names:
-        console.print("[red]No ticker to analyze; pass them comma-separated (e.g. AAPL,MSFT) "
-                      "or add --screen us[/red]")
-        raise typer.Exit(code=1)
-
-    for trade in paper.settle(book, prices, _now()):
-        console.print(f"filled: {trade['side']} {trade['quantity']:,.4g} {trade['ticker']} @ {trade['price']:,.2f}")
-    paper.save_ledger(book, path)
-
-    decider = _graph_decider(DEFAULT_CONFIG)
-    for name in names:
-        console.print(f"Analyzing {name}...")
-        try:
-            record = paper.decide(book, name, prices, decider, _now)
-        except Exception as exc:  # one ticker failing must not lose the others
-            console.print(f"[yellow]skipped {name}: {exc}[/yellow]")
-            continue
-        paper.save_ledger(book, path)
-        console.print(f"{record['ticker']} ({record['analysis_date']}): {record['rating']}")
-
-    paper.mark_to_market(book, prices, _now())
-    paper.save_ledger(book, path)
     console.print("")
     console.print(paper.report(book))
 

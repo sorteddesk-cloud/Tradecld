@@ -32,6 +32,13 @@ dev = [
     "ruff>=0.15",
     "pytest>=8.0",
     "pytest-subtests>=0.13",
+    "flask>=3.0.0",
+    "markdown>=3.6",
+]
+# Local web GUI (gui/): pip install ".[gui]", then `tradingagents-gui`.
+gui = [
+    "flask>=3.0.0",
+    "markdown>=3.6",
 ]
 # Amazon Bedrock support (AWS SigV4 auth + boto3). Optional so the core install
 # stays lean: pip install "tradingagents[bedrock]".
@@ -41,12 +48,14 @@ bedrock = [
 
 [project.scripts]
 tradingagents = "cli.main:app"
+tradingagents-gui = "gui.app:main"
 
 [tool.setuptools.packages.find]
-include = ["tradingagents*", "cli*"]
+include = ["tradingagents*", "cli*", "gui*"]
 
 [tool.setuptools.package-data]
 cli = ["static/*"]
+gui = ["templates/*.html", "static/css/*", "static/js/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

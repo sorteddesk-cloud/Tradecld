@@ -30,8 +30,9 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
+from tradingagents import screener
 from tradingagents.agents.rating import RATINGS_5_TIER
-from tradingagents.dataflows.symbols import normalize_symbol
+from tradingagents.dataflows.symbols import crypto_base, normalize_symbol
 from tradingagents.portfolio import PortfolioContext, Position
 
 # Regular-session hours by exchange time zone. For any other exchange a fill
@@ -374,3 +375,105 @@ def report(ledger: dict) -> str:
             lines.append(f"  {t['date']} {t['side']} {t['quantity']:,.4g} {t['ticker']} "
                          f"@ {t['price']:,.2f} ({t['rating']}){extra}")
     return "\n".join(lines)
+
+
+def summary(ledger: dict) -> dict:
+    """The account as data, for a UI to lay out."""
+    total = equity(ledger)
+    change = total / ledger["starting_cash"] - 1
+    bench = ledger.get("benchmark")
+    bench_change = bench["last_price"] / bench["start_price"] - 1 if bench else None
+    positions = []
+    for ticker, p in sorted(ledger["positions"].items()):
+        value = p["quantity"] * p["last_price"]
+        positions.append({"ticker": ticker, "quantity": p["quantity"],
+                          "average_price": p["average_price"], "last_price": p["last_price"],
+                          "value": value, "gain": p["last_price"] / p["average_price"] - 1,
+                          "weight": value / total})
+    return {
+        "currency": ledger["currency"], "created": ledger["created"],
+        "marked_at": ledger.get("marked_at"), "rules": ledger["rules"],
+        "starting_cash": ledger["starting_cash"], "cash": ledger["cash"],
+        "equity": total, "return": change,
+        "benchmark": bench and {"ticker": bench["ticker"], "return": bench_change,
+                                "excess": change - bench_change},
+        "positions": positions,
+        "pending": ledger["pending"],
+        "trades": ledger["trades"][-25:][::-1],
+        "decisions": ledger["decisions"][-25:][::-1],
+    }
+
+
+# --------------------------------------------------------------------------- session
+
+
+def graph_decider(config: dict) -> Callable[[str, str, PortfolioContext], str]:
+    """Run the full graph for a ticker, with the analysts that apply to it."""
+    from tradingagents.graph.trading_graph import TradingAgentsGraph
+
+    graphs: dict[tuple[str, ...], TradingAgentsGraph] = {}
+
+    def decide(ticker: str, trade_date: str, portfolio: PortfolioContext) -> str:
+        asset_type = "crypto" if crypto_base(ticker) else "stock"
+        # Crypto and commodity funds have no company financials to analyze.
+        no_fundamentals = asset_type == "crypto" or ticker in screener.COMMODITY_FUNDS
+        analysts = ("market", "social", "news") if no_fundamentals else (
+            "market", "social", "news", "fundamentals")
+        if analysts not in graphs:
+            graphs[analysts] = TradingAgentsGraph(list(analysts), config=config)
+        _, signal = graphs[analysts].propagate(ticker, trade_date, asset_type, portfolio=portfolio)
+        return signal
+
+    return decide
+
+
+def run_session(path: str | Path, tickers: list[str], *, prices: PriceSource,
+                decider: Callable[[str, str, PortfolioContext], str],
+                clock: Callable[[], datetime], log: Callable[[str], None],
+                screen: str | None = None, top: int = 2,
+                screen_fn: Callable[[str, date], list] | None = None,
+                should_stop: Callable[[], bool] | None = None) -> dict:
+    """One paper-trading session: fill due orders, analyze, queue, revalue.
+
+    Analyzes the named tickers, every held position (so the account can sell
+    it), and with ``screen`` the screener's ``top`` new names. The ledger is
+    saved after every step, so an interrupted session loses nothing done.
+    """
+    ledger = load_ledger(path)
+    names = [t.strip().upper() for t in tickers if t.strip()]
+    names += [t for t in ledger["positions"] if t not in names]
+    if screen:
+        currency, _ = screener.universe(screen)
+        if currency != ledger["currency"]:
+            raise ValueError(f"the {screen} universe trades in {currency}, "
+                             f"but this account is in {ledger['currency']}")
+        # Yesterday: today's bar may still be trading, and a pick must not use it.
+        as_of = (clock() - timedelta(days=1)).date()
+        picks = (screen_fn or screener.screen)(screen, as_of)
+        new = [p for p in picks if p.ticker not in names][:top]
+        for pick in new:
+            log(f"screener picked {pick.ticker} ({pick.momentum:+.1%} over 3 months)")
+        names += [p.ticker for p in new]
+    if not names:
+        raise ValueError("No ticker to analyze; name some (e.g. AAPL,MSFT) or use the screener")
+
+    for trade in settle(ledger, prices, clock()):
+        log(f"filled: {trade['side']} {trade['quantity']:,.4g} {trade['ticker']} @ {trade['price']:,.2f}")
+    save_ledger(ledger, path)
+
+    for name in names:
+        if should_stop and should_stop():
+            log("stopped before analyzing the remaining tickers")
+            break
+        log(f"Analyzing {name}...")
+        try:
+            record = decide(ledger, name, prices, decider, clock)
+        except Exception as exc:  # one ticker failing must not lose the others
+            log(f"skipped {name}: {exc}")
+            continue
+        save_ledger(ledger, path)
+        log(f"{record['ticker']} ({record['analysis_date']}): {record['rating']}")
+
+    mark_to_market(ledger, prices, clock())
+    save_ledger(ledger, path)
+    return ledger
