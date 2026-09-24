@@ -280,6 +280,65 @@ def get_closes(symbol: str, start_date: str, end_date: str) -> pd.Series:
     return history["Close"] if "Close" in history else pd.Series(dtype=float)
 
 
+def get_sessions(symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+    """Daily open and close from ``start_date`` up to, not including, ``end_date``.
+
+    Returns the frame indexed by session date, with ``open`` and ``close`` as
+    traded (not dividend-adjusted), and the exchange's time zone name, so a
+    caller can tell whether a session had opened by a given moment.
+    """
+    canonical = normalize_symbol(symbol)
+    try:
+        history = yf_retry(lambda: yf.Ticker(canonical).history(
+            start=start_date, end=end_date, auto_adjust=False))
+    except Exception as e:
+        raise NoMarketDataError(symbol, canonical, f"prices unavailable: {e}") from e
+    if history.empty or "Open" not in history:
+        raise_for_empty(symbol, canonical, "daily prices")
+    tz = str(history.index.tz) if history.index.tz is not None else "UTC"
+    frame = pd.DataFrame(
+        {"open": history["Open"].to_numpy(), "close": history["Close"].to_numpy()},
+        index=[ts.date() for ts in history.index],
+    ).dropna()
+    return frame, tz
+
+
+def get_daily_closes(symbols: list[str], start_date: str, end_date: str) -> pd.DataFrame:
+    """Split- and dividend-adjusted daily closes for many symbols in one request.
+
+    One column per requested symbol, from ``start_date`` up to, not including,
+    ``end_date``. A symbol Yahoo returned nothing for is left out rather than
+    failing the batch; an empty frame means the whole request failed.
+    """
+    canonical = {normalize_symbol(s): s for s in symbols}
+    try:
+        data = yf_retry(lambda: yf.download(
+            list(canonical), start=start_date, end=end_date, auto_adjust=True,
+            progress=False, threads=True, group_by="column"))
+    except Exception as e:
+        raise NoMarketDataError(",".join(symbols), None, f"prices unavailable: {e}") from e
+    if data is None or data.empty or "Close" not in data:
+        raise_for_empty(",".join(symbols), ",".join(canonical), "daily prices")
+    closes = data["Close"]
+    if isinstance(closes, pd.Series):  # a single symbol comes back without a ticker level
+        closes = closes.to_frame(name=next(iter(canonical)))
+    closes = closes.rename(columns=canonical).dropna(axis=1, how="all")
+    closes.index = [ts.date() for ts in closes.index]
+    return closes
+
+
+def get_quote_currency(symbol: str) -> str:
+    """The currency Yahoo quotes ``symbol`` in, e.g. ``USD`` or ``GBp`` (pence)."""
+    canonical = normalize_symbol(symbol)
+    try:
+        currency = yf_retry(lambda: yf.Ticker(canonical).fast_info["currency"])
+    except Exception as e:
+        raise NoMarketDataError(symbol, canonical, f"quote currency unavailable: {e}") from e
+    if not currency:
+        raise NoMarketDataError(symbol, canonical, "no quote currency")
+    return str(currency)
+
+
 def get_stock_stats(
     symbol: Annotated[str, "ticker symbol for the company"],
     indicator: Annotated[

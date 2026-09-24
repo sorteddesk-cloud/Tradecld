@@ -134,3 +134,56 @@ def test_backtest_reports_a_setup_failure_in_one_line(runner, monkeypatch):
     assert result.exit_code == 1
     assert "API key" in result.output
     assert "Traceback" not in result.output
+
+
+@pytest.mark.unit
+def test_paper_commands_open_run_and_report(runner, monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from tests.test_paper import _prices
+
+    monkeypatch.setattr(m.paper, "YahooPrices", _prices)
+    monkeypatch.setattr(m, "_now", lambda: datetime(2026, 9, 22, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(m.paper, "graph_decider", lambda config: lambda *a: "Buy")
+    ledger = str(tmp_path / "ledger.json")
+
+    opened = runner.invoke(m.app, ["paper", "init", "--cash", "5000", "--ledger", ledger])
+    assert opened.exit_code == 0, opened.output
+    again = runner.invoke(m.app, ["paper", "init", "--ledger", ledger])
+    assert again.exit_code == 1 and "--force" in again.output
+
+    ran = runner.invoke(m.app, ["paper", "run", "AAPL", "--ledger", ledger])
+    assert ran.exit_code == 0, ran.output
+    assert "AAPL (2026-09-21): Buy" in ran.output and "Waiting to fill" in ran.output
+    assert calls == []  # a subcommand never also runs the interactive analysis
+
+    missing = runner.invoke(m.app, ["paper", "status", "--ledger", str(tmp_path / "x.json")])
+    assert missing.exit_code == 1 and "paper init" in missing.output
+
+
+@pytest.mark.unit
+def test_paper_run_adds_screened_names_and_held_positions(runner, monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from tests.test_paper import _prices
+    from tradingagents.screener import Pick
+
+    monkeypatch.setattr(m.paper, "YahooPrices", _prices)
+    monkeypatch.setattr(m, "_now", lambda: datetime(2026, 9, 22, 12, tzinfo=timezone.utc))
+    analyzed = []
+    monkeypatch.setattr(m.paper, "graph_decider",
+                        lambda config: lambda t, *a: analyzed.append(t) or "Hold")
+    monkeypatch.setattr(m.screener, "screen", lambda name, as_of: [
+        Pick("AAPL", 0.3, 1, 1), Pick("SPY", 0.2, 1, 1), Pick("MSFT", 0.1, 1, 1)])
+    ledger = str(tmp_path / "ledger.json")
+    assert runner.invoke(m.app, ["paper", "init", "--ledger", ledger]).exit_code == 0
+
+    ran = runner.invoke(m.app, ["paper", "run", "--screen", "us", "--top", "2", "--ledger", ledger])
+    assert ran.exit_code == 0, ran.output
+    assert analyzed == ["AAPL", "SPY"]
+
+    uk = runner.invoke(m.app, ["paper", "run", "--screen", "uk", "--ledger", ledger])
+    assert uk.exit_code == 1 and "trades in GBP" in uk.output
+
+    empty = runner.invoke(m.app, ["paper", "run", "--ledger", ledger])
+    assert empty.exit_code == 1 and "screener" in empty.output

@@ -1,9 +1,12 @@
 import sys
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import typer
 
 from cli.display import console
 from cli.run import run_analysis
+from tradingagents import paper, screener
 from tradingagents.backtest import iter_grid, run_backtest, summarize
 from tradingagents.default_config import DEFAULT_CONFIG
 from tradingagents.portfolio import load_portfolio
@@ -124,6 +127,112 @@ def backtest(
         console.print(f"[yellow]failed:[/yellow] {ticker} {date}: {reason}")
     for ticker, reason in result.settlement_failures:
         console.print(f"[yellow]unsettled:[/yellow] {ticker}: {reason}")
+
+
+paper_app = typer.Typer(help="Paper trading: act on the ratings with a simulated account.")
+app.add_typer(paper_app, name="paper")
+
+_LEDGER_OPTION = typer.Option(None, "--ledger", help="Ledger file; defaults to ~/.tradingagents/paper/ledger.json")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ledger_path(ledger: str | None):
+    return ledger or paper.default_ledger_path(DEFAULT_CONFIG)
+
+
+@paper_app.command("init")
+def paper_init(
+    cash: float = typer.Option(10_000.0, "--cash", help="Starting cash"),
+    currency: str = typer.Option("USD", "--currency", help="USD for US stocks and crypto, GBP for London (.L)"),
+    max_position: float = typer.Option(0.25, "--max-position", help="Largest share of equity in one name"),
+    slippage_bps: float = typer.Option(10.0, "--slippage-bps", help="Price penalty per fill, in basis points"),
+    commission: float = typer.Option(0.0, "--commission", help="Flat fee per trade"),
+    whole_shares: bool = typer.Option(False, "--whole-shares", help="Trade whole shares only"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing account"),
+    ledger: str = _LEDGER_OPTION,
+):
+    """Open a paper account."""
+    path = _ledger_path(ledger)
+    if Path(path).exists() and not force:
+        console.print(f"[red]A paper account already exists at {path}; pass --force to replace it.[/red]")
+        raise typer.Exit(code=1)
+    try:
+        book = paper.new_ledger(cash, currency, paper.YahooPrices(), _now(), max_position,
+                                slippage_bps, commission, whole_shares)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    paper.save_ledger(book, path)
+    console.print(f"Opened a {book['currency']} paper account with {cash:,.2f} at {path}")
+
+
+_SCREEN_TOP = 2
+
+
+def _screen_as_of():
+    # Yesterday: today's bar may still be trading, and a pick must not use it.
+    return (_now() - timedelta(days=1)).date()
+
+
+@paper_app.command("screen")
+def paper_screen(
+    universe: str = typer.Option("us", "--universe", help="us, uk or commodities"),
+    top: int = typer.Option(10, "--top", help="How many to show"),
+):
+    """Rank a universe on 3-month momentum, above the 50-day average (price only, no AI)."""
+    try:
+        picks = screener.screen(universe, _screen_as_of())
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    if not picks:
+        console.print(f"Nothing in {universe} is both above its 50-day average and up over 3 months.")
+    for i, pick in enumerate(picks[:top], 1):
+        console.print(f"{i:>2}. {pick.ticker}: {pick.momentum:+.1%} over 3 months, "
+                      f"{pick.close / pick.sma - 1:+.1%} above its 50-day average")
+
+
+@paper_app.command("run")
+def paper_run(
+    tickers: str = typer.Argument("", help="Comma-separated tickers, e.g. AAPL,MSFT; optional with --screen"),
+    screen: str = typer.Option(None, "--screen", help="Also let the screener pick: us, uk or commodities"),
+    top: int = typer.Option(_SCREEN_TOP, "--top", help="How many new names the screener adds"),
+    ledger: str = _LEDGER_OPTION,
+):
+    """Fill due orders, then analyze each ticker and queue its order for the next open.
+
+    Held positions are always analyzed, so the account can decide to sell them.
+    """
+    try:
+        book = paper.run_session(
+            _ledger_path(ledger), tickers.split(","), prices=paper.YahooPrices(),
+            decider=paper.graph_decider(DEFAULT_CONFIG), clock=_now, log=console.print,
+            screen=screen, top=top, screen_fn=screener.screen,
+        )
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    console.print("")
+    console.print(paper.report(book))
+
+
+@paper_app.command("status")
+def paper_status(ledger: str = _LEDGER_OPTION):
+    """Fill due orders and show the account."""
+    path = _ledger_path(ledger)
+    prices = paper.YahooPrices()
+    try:
+        book = paper.load_ledger(path)
+        paper.settle(book, prices, _now())
+        paper.mark_to_market(book, prices, _now())
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    paper.save_ledger(book, path)
+    console.print(paper.report(book))
 
 
 if __name__ == "__main__":

@@ -2,6 +2,8 @@
 
 > Imported from [TauricResearch/TradingAgents](https://github.com/TauricResearch/TradingAgents) v0.5.1 (commit `35543d0`), licensed under Apache-2.0 — see [LICENSE](LICENSE). Original README follows.
 
+> **Web GUI.** A local browser interface, ported from [TheLocalLab/TradingAgents-GUI](https://github.com/TheLocalLab/TradingAgents-GUI) (Apache-2.0) onto this version, plus a **Paper & Backtest** tab. Install once with `./install.sh` (Windows: `install.bat`), then launch with `./start.sh` (`start.bat`) and open http://127.0.0.1:5000. See [Web GUI](#web-gui) below.
+
 <p align="center">
   <img src="assets/TauricResearch.png" style="width: 60%; height: auto;">
 </p>
@@ -351,6 +353,43 @@ tradingagents backtest NVDA,AAPL --start 2026-06-01 --end 2026-08-01 --every 7
 ```
 
 Each cell is scored on realized alpha against the instrument's regional benchmark, grouped by rating. Your own decision log is never written to, and re-running the same grid with `run_id=result.run_id` skips the cells that already ran, so an interrupted sweep continues where it stopped.
+
+## Web GUI
+
+A local web interface for everything above: run an analysis and watch each agent work, browse and export saved reports, chat with a model about a report, manage API keys, and run paper sessions and backtests.
+
+```bash
+./install.sh     # once: creates .venv and installs the framework with the GUI extra
+./start.sh       # then: serves http://127.0.0.1:5000 and opens it
+```
+
+On Windows use `install.bat` and `start.bat`. Already have an environment? `pip install -e ".[gui]"` then `tradingagents-gui`.
+
+The **Paper & Backtest** tab drives the same paper account, screener and backtest as the CLI, using the provider and models chosen on the Configuration tab. Long jobs run in the background and report progress on the page; one job or analysis runs at a time.
+
+The server answers only on localhost and refuses requests made by other websites, since it holds your API keys and can start paid runs. `--host 0.0.0.0` serves your network instead; do that only on a network you trust.
+
+The GUI is adapted from [TheLocalLab/TradingAgents-GUI](https://github.com/TheLocalLab/TradingAgents-GUI) (Apache-2.0), which targets TradingAgents v0.2.5: its run driver now uses this version's run state, decision log and checkpoints, its report-length option is removed (this version has no such setting), and cross-site requests are refused.
+
+## Paper trading
+
+A backtest scores ratings; paper trading acts on them with a simulated account, so you can watch how the calls would have traded without a broker or real money.
+
+```bash
+tradingagents paper init --cash 10000 --currency USD   # once; GBP for London (.L) tickers
+tradingagents paper run AAPL,MSFT                      # daily: fill due orders, analyze, queue new ones
+tradingagents paper status                             # fill due orders and show the account
+```
+
+Each `run` analyzes the last session whose close has passed and queues an order. The order fills at the open of the first session that starts after the decision, plus slippage (10 basis points by default), so no fill uses a price that was already known. Sizing, as a share of equity: Buy takes a full position (`--max-position`, 25% by default), Overweight at least half of one, Underweight halves the position, Sell closes it, and Hold or an unreadable rating trades nothing. The account is long only and never borrows. One account holds one currency; it is compared against SPY (USD) or the FTSE 100 (GBP). The ledger lives at `~/.tradingagents/paper/ledger.json` (`--ledger` for another).
+
+### Letting it pick
+
+`tradingagents paper run --screen us` adds the screener's top two new names to the run (`--top` for more). The screener is price-only and takes seconds: from a fixed universe it keeps names above their 50-day average that are up over the last three months, and ranks them by that gain. Universes: `us` (about 100 large US companies), `uk` (FTSE 100, for a GBP account) and `commodities` (funds such as GLD, SLV and USO, which trade like shares; rolling futures such as `GC=F` are refused). `tradingagents paper screen --universe us` shows the ranking without running the agents. Held positions are analyzed on every run, whether or not they were named, so the account can decide to sell them.
+
+Do not use the screener to choose backtest tickers: a screen run today picks names already known to have risen.
+
+Limits: dividends are not credited, and prices are not split-adjusted across a split while a position is held.
 
 ## Reproducibility
 
