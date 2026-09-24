@@ -219,6 +219,11 @@ def decide(ledger: dict, ticker: str, prices: PriceSource,
     The currency is checked before the agents run, since a run can take an hour.
     """
     ticker = normalize_symbol(ticker)
+    if ticker.endswith("=F"):
+        raise ValueError(
+            f"{ticker} is a rolling futures contract, which a paper account cannot hold "
+            "honestly; use a commodity fund such as GLD (gold), SLV (silver) or USO (oil)"
+        )
     scale = quote_scale(prices, ticker, ledger["currency"])
     frame, tz = _recent_sessions(prices, ticker, clock())
     analysis = last_completed_session(frame, tz, clock())

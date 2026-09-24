@@ -184,3 +184,12 @@ def test_ledger_round_trips_and_reports(tmp_path):
 def test_missing_ledger_says_how_to_create_one(tmp_path):
     with pytest.raises(ValueError, match="paper init"):
         paper.load_ledger(tmp_path / "none.json")
+
+
+@pytest.mark.unit
+def test_futures_are_refused_with_a_fund_suggested():
+    prices = _prices()
+    ledger = _account(prices, _utc(2026, 9, 22, 12))
+    with pytest.raises(ValueError, match="GLD"):
+        paper.decide(ledger, "GOLD", prices, lambda *a: pytest.fail("agents ran"),
+                     lambda: _utc(2026, 9, 22, 12))

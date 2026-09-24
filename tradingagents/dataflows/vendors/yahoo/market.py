@@ -303,6 +303,30 @@ def get_sessions(symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFr
     return frame, tz
 
 
+def get_daily_closes(symbols: list[str], start_date: str, end_date: str) -> pd.DataFrame:
+    """Split- and dividend-adjusted daily closes for many symbols in one request.
+
+    One column per requested symbol, from ``start_date`` up to, not including,
+    ``end_date``. A symbol Yahoo returned nothing for is left out rather than
+    failing the batch; an empty frame means the whole request failed.
+    """
+    canonical = {normalize_symbol(s): s for s in symbols}
+    try:
+        data = yf_retry(lambda: yf.download(
+            list(canonical), start=start_date, end=end_date, auto_adjust=True,
+            progress=False, threads=True, group_by="column"))
+    except Exception as e:
+        raise NoMarketDataError(",".join(symbols), None, f"prices unavailable: {e}") from e
+    if data is None or data.empty or "Close" not in data:
+        raise_for_empty(",".join(symbols), ",".join(canonical), "daily prices")
+    closes = data["Close"]
+    if isinstance(closes, pd.Series):  # a single symbol comes back without a ticker level
+        closes = closes.to_frame(name=next(iter(canonical)))
+    closes = closes.rename(columns=canonical).dropna(axis=1, how="all")
+    closes.index = [ts.date() for ts in closes.index]
+    return closes
+
+
 def get_quote_currency(symbol: str) -> str:
     """The currency Yahoo quotes ``symbol`` in, e.g. ``USD`` or ``GBp`` (pence)."""
     canonical = normalize_symbol(symbol)

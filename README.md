@@ -364,6 +364,12 @@ tradingagents paper status                             # fill due orders and sho
 
 Each `run` analyzes the last session whose close has passed and queues an order. The order fills at the open of the first session that starts after the decision, plus slippage (10 basis points by default), so no fill uses a price that was already known. Sizing, as a share of equity: Buy takes a full position (`--max-position`, 25% by default), Overweight at least half of one, Underweight halves the position, Sell closes it, and Hold or an unreadable rating trades nothing. The account is long only and never borrows. One account holds one currency; it is compared against SPY (USD) or the FTSE 100 (GBP). The ledger lives at `~/.tradingagents/paper/ledger.json` (`--ledger` for another).
 
+### Letting it pick
+
+`tradingagents paper run --screen us` adds the screener's top two new names to the run (`--top` for more). The screener is price-only and takes seconds: from a fixed universe it keeps names above their 50-day average that are up over the last three months, and ranks them by that gain. Universes: `us` (about 100 large US companies), `uk` (FTSE 100, for a GBP account) and `commodities` (funds such as GLD, SLV and USO, which trade like shares; rolling futures such as `GC=F` are refused). `tradingagents paper screen --universe us` shows the ranking without running the agents. Held positions are analyzed on every run, whether or not they were named, so the account can decide to sell them.
+
+Do not use the screener to choose backtest tickers: a screen run today picks names already known to have risen.
+
 Limits: dividends are not credited, and prices are not split-adjusted across a split while a position is held.
 
 ## Reproducibility
