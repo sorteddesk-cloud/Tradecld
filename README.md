@@ -365,6 +365,8 @@ A local web interface for everything above: run an analysis and watch each agent
 
 On Windows use `install.bat` and `start.bat`. Already have an environment? `pip install -e ".[gui]"` then `tradingagents-gui`.
 
+**Pause** (on the Analyze tab and the Progress box) holds a run before its next step: the step in progress finishes, then nothing more is sent to the model until **Resume**. **Stop** ends the run after the current step. A stopped backtest keeps its plan and shows **Continue** under Past backtests, which finishes the dates it had not reached.
+
 The **Paper & Backtest** tab drives the same paper account, screener and backtest as the CLI, using the provider and models chosen on the Configuration tab. Long jobs run in the background and report progress on the page; one job or analysis runs at a time.
 
 The server answers only on localhost and refuses requests made by other websites, since it holds your API keys and can start paid runs. `--host 0.0.0.0` serves your network instead; do that only on a network you trust.

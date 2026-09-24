@@ -407,8 +407,12 @@ def summary(ledger: dict) -> dict:
 # --------------------------------------------------------------------------- session
 
 
-def graph_decider(config: dict) -> Callable[[str, str, PortfolioContext], str]:
-    """Run the full graph for a ticker, with the analysts that apply to it."""
+def graph_decider(config: dict, callbacks: list | None = None,
+                  ) -> Callable[[str, str, PortfolioContext], str]:
+    """Run the full graph for a ticker, with the analysts that apply to it.
+
+    ``callbacks`` reach every model call, e.g. to meter or pause a session.
+    """
     from tradingagents.graph.trading_graph import TradingAgentsGraph
 
     graphs: dict[tuple[str, ...], TradingAgentsGraph] = {}
@@ -420,7 +424,8 @@ def graph_decider(config: dict) -> Callable[[str, str, PortfolioContext], str]:
         analysts = ("market", "social", "news") if no_fundamentals else (
             "market", "social", "news", "fundamentals")
         if analysts not in graphs:
-            graphs[analysts] = TradingAgentsGraph(list(analysts), config=config)
+            graphs[analysts] = TradingAgentsGraph(list(analysts), config=config,
+                                                  callbacks=callbacks)
         _, signal = graphs[analysts].propagate(ticker, trade_date, asset_type, portfolio=portfolio)
         return signal
 

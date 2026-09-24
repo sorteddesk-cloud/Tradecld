@@ -15,6 +15,8 @@ import uuid
 from collections.abc import Callable
 from typing import Any
 
+from .pause import GATE
+
 logger = logging.getLogger(__name__)
 
 JobFn = Callable[[Callable[[str], None], Callable[[], bool]], Any]
@@ -46,6 +48,7 @@ class Job:
             "id": self.id, "kind": self.kind, "title": self.title, "status": self.status,
             "log": self.log[since:], "log_size": len(self.log), "result": self.result,
             "error": self.error, "started_at": self.started_at, "ended_at": self.ended_at,
+            "paused": self.status == "running" and GATE.paused,
         }
 
 
@@ -62,6 +65,7 @@ class JobManager:
             if self.busy():
                 raise RuntimeError(f"{self.current.title} is still running")
             job = self.current = Job(kind, title)
+            GATE.resume()
         threading.Thread(target=self._run, args=(job, fn), name=f"job-{job.id}",
                          daemon=True).start()
         return job
@@ -87,4 +91,5 @@ class JobManager:
             job.write(f"Failed: {job.error}")
             logger.debug(traceback.format_exc())
         finally:
+            GATE.resume()
             job.ended_at = time.time()

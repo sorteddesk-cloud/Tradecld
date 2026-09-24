@@ -7,6 +7,7 @@ own rules. Long work runs as a background job the page polls.
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
@@ -15,6 +16,7 @@ from pathlib import Path
 from flask import Blueprint, jsonify, request
 
 from .jobs import JobManager
+from .pause import GATE, PauseCallback
 
 bp = Blueprint("trading", __name__)
 jobs = JobManager()
@@ -64,6 +66,11 @@ def _busy_reason() -> str | None:
     if _runs is not None and _runs.is_anything_running():
         return "An analysis is running; wait for it or stop it first"
     return None
+
+
+def _pause_callbacks(log, should_stop) -> list:
+    return [PauseCallback(GATE, on_hold=lambda: log("⏸ Paused before the next step."),
+                          should_stop=should_stop)]
 
 
 def _error(message: str, status: int = 400):
@@ -165,7 +172,8 @@ def paper_run():
 
     def work(log, should_stop):
         ledger = paper.run_session(
-            path, tickers, prices=paper.YahooPrices(), decider=paper.graph_decider(config),
+            path, tickers, prices=paper.YahooPrices(),
+            decider=paper.graph_decider(config, callbacks=_pause_callbacks(log, should_stop)),
             clock=_now, log=log, screen=screen, top=top, screen_fn=screener.screen,
             should_stop=should_stop,
         )
@@ -188,40 +196,77 @@ def _summary_dict(log_path: Path) -> dict:
     }
 
 
+def _backtest_dir(run_id: str) -> Path:
+    if not _ACCOUNT_RE.match(run_id or ""):
+        raise ValueError("unknown backtest")
+    return Path(_default_config()["results_dir"]) / "backtest" / run_id
+
+
+def _read_plan(folder: Path) -> dict | None:
+    try:
+        return json.loads((folder / "plan.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
 @bp.route("/api/backtest", methods=["POST"])
 def backtest_start():
+    """Start a sweep, or with ``continue`` finish one that was stopped.
+
+    The grid is saved beside the sweep's log as plan.json, so a stopped sweep
+    can be finished later; cells already in its log are skipped.
+    """
     from tradingagents.backtest import iter_grid, run_backtest
     body = request.get_json(silent=True) or {}
     reason = _busy_reason()
     if reason:
         return _error(reason, 409)
-    tickers = body.get("tickers") or []
-    if isinstance(tickers, str):
-        tickers = tickers.split(",")
-    tickers = [t.strip().upper() for t in tickers if t.strip()]
-    analysts = body.get("analysts") or ["market", "news", "fundamentals"]
     try:
-        if not tickers:
-            raise ValueError("Name at least one ticker")
-        dates = iter_grid(str(body.get("start")), str(body.get("end")), int(body.get("every") or 7))
-        if not dates:
-            raise ValueError("That range has no dates to analyze")
-    except ValueError as exc:
+        if body.get("continue"):
+            run_id = str(body["continue"])
+            plan = _read_plan(_backtest_dir(run_id))
+            if plan is None:
+                raise ValueError("This backtest has no saved plan (it was started from the "
+                                 "command line); continue it there with --run-id")
+            tickers, dates, analysts = plan["tickers"], plan["dates"], plan["analysts"]
+        else:
+            tickers = body.get("tickers") or []
+            if isinstance(tickers, str):
+                tickers = tickers.split(",")
+            tickers = [t.strip().upper() for t in tickers if t.strip()]
+            analysts = body.get("analysts") or ["market", "news", "fundamentals"]
+            if not tickers:
+                raise ValueError("Name at least one ticker")
+            dates = iter_grid(str(body.get("start")), str(body.get("end")),
+                              int(body.get("every") or 7))
+            if not dates:
+                raise ValueError("That range has no dates to analyze")
+            run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+    except (KeyError, ValueError) as exc:
         return _error(str(exc))
+
     config = _job_config(body.get("llm"))
-    run_id = datetime.now().strftime("%Y%m%d_%H%M%S")
-    log_path = Path(config["results_dir"]) / "backtest" / run_id / "trading_memory.md"
+    folder = Path(config["results_dir"]) / "backtest" / run_id
+    folder.mkdir(parents=True, exist_ok=True)
+    if not body.get("continue"):
+        plan = {"tickers": tickers, "dates": dates, "analysts": analysts}
+        (folder / "plan.json").write_text(json.dumps(plan, indent=2), encoding="utf-8")
+    log_path = folder / "trading_memory.md"
 
     def work(log, should_stop):
         log(f"{len(tickers)} ticker(s) x {len(dates)} date(s) = {len(tickers) * len(dates)} runs")
+        callbacks = _pause_callbacks(log, should_stop)
         # One date per call, so Stop takes effect between dates; the shared
-        # run id makes each call continue the same sweep.
+        # run id makes each call continue the same sweep and skip done cells.
         for date in dates:
             if should_stop():
+                log("Stopped. Press Continue on this backtest to finish it later.")
                 break
             log(f"Analyzing {', '.join(tickers)} as of {date}...")
             result = run_backtest(tickers, [date], config, selected_analysts=analysts,
-                                  run_id=run_id)
+                                  run_id=run_id, callbacks=callbacks)
+            if result.skipped:
+                log(f"{result.skipped} already done, skipped")
             for ticker, day, why in result.failures:
                 log(f"failed {ticker} {day}: {why}")
         if not log_path.exists():
@@ -230,7 +275,8 @@ def backtest_start():
         log(summary["text"])
         return {"run_id": run_id, "summary": summary}
 
-    job = jobs.start("backtest", f"Backtest {','.join(tickers)}", work)
+    verb = "Continue" if body.get("continue") else "Backtest"
+    job = jobs.start("backtest", f"{verb} {','.join(tickers)}", work)
     return jsonify({"ok": True, "job": job.snapshot(), "run_id": run_id})
 
 
@@ -242,11 +288,27 @@ def backtest_runs():
         for folder in sorted(base.iterdir(), reverse=True)[:30]:
             log = folder / "trading_memory.md"
             if not log.is_file():
+                plan = _read_plan(folder)
+                if plan:
+                    total = len(plan["tickers"]) * len(plan["dates"])
+                    out.append({"run_id": folder.name, "tickers": plan["tickers"], "total": total,
+                                "done": 0, "can_continue": True, "resolved": 0, "pending": 0,
+                                "unscored": 0, "by_rating": {}, "holding": ""})
                 continue
+            plan = _read_plan(folder)
             try:
-                out.append({"run_id": folder.name, **_summary_dict(log)})
+                entry = {"run_id": folder.name, **_summary_dict(log)}
             except Exception as exc:
                 out.append({"run_id": folder.name, "error": str(exc)})
+                continue
+            done = entry["resolved"] + entry["pending"] + entry["unscored"]
+            if plan:
+                total = len(plan["tickers"]) * len(plan["dates"])
+                entry.update(tickers=plan["tickers"], total=total, done=done,
+                             can_continue=done < total)
+            else:
+                entry.update(total=None, done=done, can_continue=False)
+            out.append(entry)
     return jsonify({"runs": out})
 
 
@@ -263,3 +325,24 @@ def jobs_current():
 @bp.route("/api/jobs/stop", methods=["POST"])
 def jobs_stop():
     return jsonify({"ok": jobs.stop()})
+
+
+# --------------------------------------------------------------------------- pause
+
+
+@bp.route("/api/pause", methods=["GET"])
+def pause_get():
+    return jsonify({"paused": GATE.paused, "since": GATE.paused_at})
+
+
+@bp.route("/api/pause", methods=["POST"])
+def pause_set():
+    """Pause (``{"paused": true}``) or resume whatever is running."""
+    want = bool((request.get_json(silent=True) or {}).get("paused"))
+    if want:
+        if not jobs.busy() and not (_runs is not None and _runs.is_anything_running()):
+            return _error("Nothing is running to pause", 409)
+        GATE.pause()
+    else:
+        GATE.resume()
+    return jsonify({"ok": True, "paused": GATE.paused})

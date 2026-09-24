@@ -208,6 +208,40 @@
     } catch (e) { toast(e.message, "error"); }
   };
 
+  // ---- pause (shared by the Analyze tab and the Progress box) -------------
+  let paused = false;
+
+  window.syncPauseButtons = function (isPaused) {
+    paused = !!isPaused;
+    document.querySelectorAll(".pause-toggle .pause-label").forEach((el) => {
+      const small = el.closest("#job-pause-btn");
+      el.textContent = paused ? (small ? "▶ Resume" : "Resume") : (small ? "⏸ Pause" : "Pause");
+    });
+    const icon = document.querySelector("#pause-btn .btn-icon");
+    if (icon) icon.textContent = paused ? "▶" : "⏸";
+    const txt = document.querySelector("#global-status .status-text");
+    if (txt && paused) txt.textContent = "PAUSED";
+    else if (txt && txt.textContent === "PAUSED") txt.textContent = "RUNNING";
+  };
+
+  window.togglePause = async function () {
+    try {
+      const data = await api("/api/pause", { paused: !paused });
+      syncPauseButtons(data.paused);
+      toast(data.paused ? "Pausing: the step in progress finishes, then it waits for Resume."
+                        : "Resumed.", "info");
+    } catch (e) { toast(e.message, "error"); }
+  };
+
+  window.tradingContinueBacktest = async function (runId) {
+    const llm = collectLlm();
+    llm.research_depth = 1;
+    try {
+      await api("/api/backtest", { continue: runId, llm });
+      startPolling(true);
+    } catch (e) { toast(e.message, "error"); }
+  };
+
   window.tradingStopJob = async function () {
     try { await api("/api/jobs/stop", {}); } catch (e) { toast(e.message, "error"); }
   };
@@ -223,6 +257,8 @@
     try { ({ job } = await api(`/api/jobs/current?since=${jobSince}`)); } catch (e) { /* retry below */ }
     const running = job && job.status === "running";
     $("job-stop-btn").style.display = running ? "" : "none";
+    $("job-pause-btn").style.display = running ? "" : "none";
+    if (job && (running || paused)) syncPauseButtons(running && job.paused);
     $("paper-run-btn").disabled = !!running;
     $("bt-run-btn").disabled = !!running;
     if (job) {
@@ -253,7 +289,9 @@
       if (!runs.length) { out.innerHTML = ""; return; }
       out.innerHTML = `<div class="trading-h">Past backtests</div>` + runs.map((r) => r.error ?
         `<p class="form-hint">${esc(r.run_id)}: ${esc(r.error)}</p>` : `
-        <details><summary>${esc(r.run_id)}: ${r.resolved} scored, ${r.pending} waiting</summary>
+        <details><summary>${esc(r.run_id)}${r.tickers ? " · " + esc(r.tickers.join(", ")) : ""}:
+          ${r.total ? `${r.done} of ${r.total} analyses done, ` : ""}${r.resolved} scored, ${r.pending} waiting
+          ${r.can_continue ? `<button class="btn btn-ghost btn-sm" onclick="event.preventDefault(); tradingContinueBacktest('${esc(r.run_id)}')">▶ Continue</button>` : ""}</summary>
         <table class="trading-table"><thead><tr><th>Rating</th><th class="num">Calls</th><th class="num">Right direction</th>
         <th class="num">Avg vs index</th></tr></thead><tbody>
         ${Object.entries(r.by_rating).map(([rating, sc]) => `<tr><td>${esc(rating)}</td><td class="num">${sc.count}</td>
@@ -285,6 +323,7 @@
     tradingLoadAccount();
     loadBacktests();
     startPolling(true);
+    try { syncPauseButtons((await api("/api/pause")).paused); } catch (e) { /* not critical */ }
     document.getElementById("nav-trading")?.addEventListener("click", () => {
       tradingLoadAccount();
       loadBacktests();
