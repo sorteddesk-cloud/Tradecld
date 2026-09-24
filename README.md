@@ -352,6 +352,20 @@ tradingagents backtest NVDA,AAPL --start 2026-06-01 --end 2026-08-01 --every 7
 
 Each cell is scored on realized alpha against the instrument's regional benchmark, grouped by rating. Your own decision log is never written to, and re-running the same grid with `run_id=result.run_id` skips the cells that already ran, so an interrupted sweep continues where it stopped.
 
+## Paper trading
+
+A backtest scores ratings; paper trading acts on them with a simulated account, so you can watch how the calls would have traded without a broker or real money.
+
+```bash
+tradingagents paper init --cash 10000 --currency USD   # once; GBP for London (.L) tickers
+tradingagents paper run AAPL,MSFT                      # daily: fill due orders, analyze, queue new ones
+tradingagents paper status                             # fill due orders and show the account
+```
+
+Each `run` analyzes the last session whose close has passed and queues an order. The order fills at the open of the first session that starts after the decision, plus slippage (10 basis points by default), so no fill uses a price that was already known. Sizing, as a share of equity: Buy takes a full position (`--max-position`, 25% by default), Overweight at least half of one, Underweight halves the position, Sell closes it, and Hold or an unreadable rating trades nothing. The account is long only and never borrows. One account holds one currency; it is compared against SPY (USD) or the FTSE 100 (GBP). The ledger lives at `~/.tradingagents/paper/ledger.json` (`--ledger` for another).
+
+Limits: dividends are not credited, and prices are not split-adjusted across a split while a position is held.
+
 ## Reproducibility
 
 TradingAgents is LLM-driven, so two runs of the same ticker and date can differ. This is expected for a research tool built on language models, not a defect. The variation comes from a few distinct sources, and it helps to separate them.

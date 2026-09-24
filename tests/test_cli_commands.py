@@ -134,3 +134,28 @@ def test_backtest_reports_a_setup_failure_in_one_line(runner, monkeypatch):
     assert result.exit_code == 1
     assert "API key" in result.output
     assert "Traceback" not in result.output
+
+
+@pytest.mark.unit
+def test_paper_commands_open_run_and_report(runner, monkeypatch, tmp_path):
+    from datetime import datetime, timezone
+
+    from tests.test_paper import _prices
+
+    monkeypatch.setattr(m.paper, "YahooPrices", _prices)
+    monkeypatch.setattr(m, "_now", lambda: datetime(2026, 9, 22, 12, tzinfo=timezone.utc))
+    monkeypatch.setattr(m, "_graph_decider", lambda config: lambda *a: "Buy")
+    ledger = str(tmp_path / "ledger.json")
+
+    opened = runner.invoke(m.app, ["paper", "init", "--cash", "5000", "--ledger", ledger])
+    assert opened.exit_code == 0, opened.output
+    again = runner.invoke(m.app, ["paper", "init", "--ledger", ledger])
+    assert again.exit_code == 1 and "--force" in again.output
+
+    ran = runner.invoke(m.app, ["paper", "run", "AAPL", "--ledger", ledger])
+    assert ran.exit_code == 0, ran.output
+    assert "AAPL (2026-09-21): Buy" in ran.output and "Waiting to fill" in ran.output
+    assert calls == []  # a subcommand never also runs the interactive analysis
+
+    missing = runner.invoke(m.app, ["paper", "status", "--ledger", str(tmp_path / "x.json")])
+    assert missing.exit_code == 1 and "paper init" in missing.output

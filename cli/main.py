@@ -1,11 +1,16 @@
 import sys
+from datetime import datetime, timezone
+from pathlib import Path
 
 import typer
 
 from cli.display import console
 from cli.run import run_analysis
+from tradingagents import paper
 from tradingagents.backtest import iter_grid, run_backtest, summarize
+from tradingagents.dataflows.symbols import crypto_base
 from tradingagents.default_config import DEFAULT_CONFIG
+from tradingagents.graph.trading_graph import TradingAgentsGraph
 from tradingagents.portfolio import load_portfolio
 
 # prompt_toolkit's win32 output module is importable only on Windows (it asserts
@@ -124,6 +129,117 @@ def backtest(
         console.print(f"[yellow]failed:[/yellow] {ticker} {date}: {reason}")
     for ticker, reason in result.settlement_failures:
         console.print(f"[yellow]unsettled:[/yellow] {ticker}: {reason}")
+
+
+paper_app = typer.Typer(help="Paper trading: act on the ratings with a simulated account.")
+app.add_typer(paper_app, name="paper")
+
+_LEDGER_OPTION = typer.Option(None, "--ledger", help="Ledger file; defaults to ~/.tradingagents/paper/ledger.json")
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _ledger_path(ledger: str | None):
+    return ledger or paper.default_ledger_path(DEFAULT_CONFIG)
+
+
+def _graph_decider(config: dict):
+    """Run the full graph for a ticker; crypto skips the fundamentals analyst."""
+    graphs: dict[tuple[str, ...], TradingAgentsGraph] = {}
+
+    def decide(ticker: str, trade_date: str, portfolio) -> str:
+        asset_type = "crypto" if crypto_base(ticker) else "stock"
+        analysts = ("market", "social", "news") if asset_type == "crypto" else (
+            "market", "social", "news", "fundamentals")
+        if analysts not in graphs:
+            graphs[analysts] = TradingAgentsGraph(list(analysts), config=config)
+        _, signal = graphs[analysts].propagate(ticker, trade_date, asset_type, portfolio=portfolio)
+        return signal
+
+    return decide
+
+
+@paper_app.command("init")
+def paper_init(
+    cash: float = typer.Option(10_000.0, "--cash", help="Starting cash"),
+    currency: str = typer.Option("USD", "--currency", help="USD for US stocks and crypto, GBP for London (.L)"),
+    max_position: float = typer.Option(0.25, "--max-position", help="Largest share of equity in one name"),
+    slippage_bps: float = typer.Option(10.0, "--slippage-bps", help="Price penalty per fill, in basis points"),
+    commission: float = typer.Option(0.0, "--commission", help="Flat fee per trade"),
+    whole_shares: bool = typer.Option(False, "--whole-shares", help="Trade whole shares only"),
+    force: bool = typer.Option(False, "--force", help="Replace an existing account"),
+    ledger: str = _LEDGER_OPTION,
+):
+    """Open a paper account."""
+    path = _ledger_path(ledger)
+    if Path(path).exists() and not force:
+        console.print(f"[red]A paper account already exists at {path}; pass --force to replace it.[/red]")
+        raise typer.Exit(code=1)
+    try:
+        book = paper.new_ledger(cash, currency, paper.YahooPrices(), _now(), max_position,
+                                slippage_bps, commission, whole_shares)
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    paper.save_ledger(book, path)
+    console.print(f"Opened a {book['currency']} paper account with {cash:,.2f} at {path}")
+
+
+@paper_app.command("run")
+def paper_run(
+    tickers: str = typer.Argument(..., help="Comma-separated tickers, e.g. AAPL,MSFT"),
+    ledger: str = _LEDGER_OPTION,
+):
+    """Fill due orders, then analyze each ticker and queue its order for the next open."""
+    path = _ledger_path(ledger)
+    prices = paper.YahooPrices()
+    try:
+        book = paper.load_ledger(path)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    names = [t.strip() for t in tickers.split(",") if t.strip()]
+    if not names:
+        console.print("[red]No ticker to analyze; pass them comma-separated, e.g. AAPL,MSFT[/red]")
+        raise typer.Exit(code=1)
+
+    for trade in paper.settle(book, prices, _now()):
+        console.print(f"filled: {trade['side']} {trade['quantity']:,.4g} {trade['ticker']} @ {trade['price']:,.2f}")
+    paper.save_ledger(book, path)
+
+    decider = _graph_decider(DEFAULT_CONFIG)
+    for name in names:
+        console.print(f"Analyzing {name}...")
+        try:
+            record = paper.decide(book, name, prices, decider, _now)
+        except Exception as exc:  # one ticker failing must not lose the others
+            console.print(f"[yellow]skipped {name}: {exc}[/yellow]")
+            continue
+        paper.save_ledger(book, path)
+        console.print(f"{record['ticker']} ({record['analysis_date']}): {record['rating']}")
+
+    paper.mark_to_market(book, prices, _now())
+    paper.save_ledger(book, path)
+    console.print("")
+    console.print(paper.report(book))
+
+
+@paper_app.command("status")
+def paper_status(ledger: str = _LEDGER_OPTION):
+    """Fill due orders and show the account."""
+    path = _ledger_path(ledger)
+    prices = paper.YahooPrices()
+    try:
+        book = paper.load_ledger(path)
+        paper.settle(book, prices, _now())
+        paper.mark_to_market(book, prices, _now())
+    except Exception as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from None
+    paper.save_ledger(book, path)
+    console.print(paper.report(book))
 
 
 if __name__ == "__main__":

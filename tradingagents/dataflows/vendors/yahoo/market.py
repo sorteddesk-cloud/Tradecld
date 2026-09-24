@@ -280,6 +280,41 @@ def get_closes(symbol: str, start_date: str, end_date: str) -> pd.Series:
     return history["Close"] if "Close" in history else pd.Series(dtype=float)
 
 
+def get_sessions(symbol: str, start_date: str, end_date: str) -> tuple[pd.DataFrame, str]:
+    """Daily open and close from ``start_date`` up to, not including, ``end_date``.
+
+    Returns the frame indexed by session date, with ``open`` and ``close`` as
+    traded (not dividend-adjusted), and the exchange's time zone name, so a
+    caller can tell whether a session had opened by a given moment.
+    """
+    canonical = normalize_symbol(symbol)
+    try:
+        history = yf_retry(lambda: yf.Ticker(canonical).history(
+            start=start_date, end=end_date, auto_adjust=False))
+    except Exception as e:
+        raise NoMarketDataError(symbol, canonical, f"prices unavailable: {e}") from e
+    if history.empty or "Open" not in history:
+        raise_for_empty(symbol, canonical, "daily prices")
+    tz = str(history.index.tz) if history.index.tz is not None else "UTC"
+    frame = pd.DataFrame(
+        {"open": history["Open"].to_numpy(), "close": history["Close"].to_numpy()},
+        index=[ts.date() for ts in history.index],
+    ).dropna()
+    return frame, tz
+
+
+def get_quote_currency(symbol: str) -> str:
+    """The currency Yahoo quotes ``symbol`` in, e.g. ``USD`` or ``GBp`` (pence)."""
+    canonical = normalize_symbol(symbol)
+    try:
+        currency = yf_retry(lambda: yf.Ticker(canonical).fast_info["currency"])
+    except Exception as e:
+        raise NoMarketDataError(symbol, canonical, f"quote currency unavailable: {e}") from e
+    if not currency:
+        raise NoMarketDataError(symbol, canonical, "no quote currency")
+    return str(currency)
+
+
 def get_stock_stats(
     symbol: Annotated[str, "ticker symbol for the company"],
     indicator: Annotated[
